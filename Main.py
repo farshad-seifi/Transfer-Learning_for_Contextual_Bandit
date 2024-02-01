@@ -209,7 +209,7 @@ def Data_Selector(Data, n, Budget):
     return output, Regret
 
 
-def HPO(X, Y, input):
+def HPO_Transfer(X, Y, input):
     # Fit a Gaussian Mixture Model to your data
 
     gaussian_process = GaussianProcessRegressor()
@@ -230,6 +230,53 @@ def HPO(X, Y, input):
     Optimum_Alpha = results[1].iloc[np.argmin(results[0])]
 
     return Optimum_Alpha
+
+
+def HPO_Sorrugate(Alpha_Vector, Result_Vector):
+    # Fit a Gaussian Mixture Model to your data
+
+    gaussian_process = GaussianProcessRegressor()
+    Alpha_Vector = pd.DataFrame(Alpha_Vector)
+    gaussian_process.fit(Alpha_Vector, Result_Vector)
+
+
+
+    results = np.zeros((20, 2))
+    results = pd.DataFrame(results)
+    for i in range(0, 20):
+        alpha = 10 / (i+1)
+        pd.DataFrame([alpha])
+        mean_prediction, std_prediction = gaussian_process.predict(pd.DataFrame([alpha]), return_std=True)
+        results[0].iloc[i] = mean_prediction
+        results[1].iloc[i] = alpha
+
+    Optimum_Alpha = results[1].iloc[np.argmin(results[0])]
+
+    return Optimum_Alpha
+
+
+def Model_Selection(X, Y, Previous_Alpha, Alpha_Vector, Result_Vector, Previous_Input, Previous_Result):
+    gaussian_process = GaussianProcessRegressor()
+    gaussian_process.fit(X, Y)
+    input = Previous_Input[:X.shape[1]]
+    input[7] = Previous_Alpha
+    mean_prediction, std_prediction = gaussian_process.predict(np.array(input).reshape(1, -1), return_std=True)
+
+    gaussian_process_alpha = GaussianProcessRegressor()
+    gaussian_process_alpha.fit(pd.DataFrame(Alpha_Vector), Result_Vector)
+    mean_prediction_alpha, std_prediction_alpha = gaussian_process_alpha.predict(pd.DataFrame([Previous_Alpha]), return_std=True)
+
+    Transfer_Mape = np.abs(Previous_Result - mean_prediction) / Previous_Result
+    Sorrugate_Mape = np.abs(Previous_Result - mean_prediction_alpha) / Previous_Result
+
+    if Transfer_Mape >= Sorrugate_Mape:
+        Selected_model = 'Sorrugate'
+    else:
+        Selected_model = 'Transfer'
+
+    return Selected_model
+
+
 
 def Target_Task_Optimization(n_actions, n_features,initial_alpha, Total_steps, Budget, final_df):
 
@@ -261,8 +308,9 @@ def Target_Task_Optimization(n_actions, n_features,initial_alpha, Total_steps, B
 
     Vector = np.zeros((Total_steps, 13))
     Vector = pd.DataFrame(Vector)
-    Reduced_Vector = pd.DataFrame(np.zeros((Budget, Vector.shape[1])))
+    Reduced_Vector = pd.DataFrame(np.zeros((Budget, Vector.shape[1]+1)))
 
+    Alpha_Vector = []
 
     for z in range(0, Budget):
         if z < 2:
@@ -270,12 +318,25 @@ def Target_Task_Optimization(n_actions, n_features,initial_alpha, Total_steps, B
             X, Y = Data_Selector(final_df, z, Budget)
             alpha = X['Alpha'].iloc[np.argmin(Y)][0]
             linucb_agent.update_alpha(alpha)
+            Selected_Model = 'Nazdiki'
 
         if z >= 2:
+            Selected_Model = Model_Selection(X_Previous_Step, Y_Previous_Step, Previous_Alpha, Alpha_Vector[:-1], Reduced_Vector[9].iloc[:z-1], Reduced_Vector.iloc[z-2], Reduced_Vector[9].iloc[z-1])
+            if Selected_Model == 'Sorrugate':
+                X, Y = Data_Selector(final_df, z, Budget)
+                alpha = HPO_Sorrugate(Alpha_Vector, Reduced_Vector[9].iloc[:z])
+                linucb_agent.update_alpha(alpha)
 
-            X, Y = Data_Selector(final_df, z, Budget)
-            alpha = HPO(X, Y, Reduced_Vector.iloc[z-1])
-            linucb_agent.update_alpha(alpha)
+            else:
+                X, Y = Data_Selector(final_df, z, Budget)
+                alpha = HPO_Transfer(X, Y, Reduced_Vector.iloc[z-1])
+                linucb_agent.update_alpha(alpha)
+
+        X_Previous_Step = X
+        Y_Previous_Step = Y
+        Previous_Alpha = alpha
+        Alpha_Vector.append(alpha)
+
 
         for o in range(0, n_steps):
 
@@ -367,6 +428,7 @@ def Target_Task_Optimization(n_actions, n_features,initial_alpha, Total_steps, B
         Reduced_Vector[10].iloc[z] = z
         Reduced_Vector[11].iloc[z] = alpha
         Reduced_Vector[12].iloc[z] = Vector[7].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[13].iloc[z] = Selected_Model
     Reduced_Vector[7] = 0
     Reduced_Vector[7] = Reduced_Vector[12]
 
@@ -377,15 +439,16 @@ def Target_Task_Optimization(n_actions, n_features,initial_alpha, Total_steps, B
 
 Budget = 50
 n_steps = 5000
-n_actions = [5, 7]
-n_features = [3, 5]
-alpha = [0.1, 0.5, 1, 2, 5, 10]
+n_actions = [5, 7, 10, 12, 15, 18, 20]
+n_features = [3, 5, 7, 10, 12, 15, 18, 20]
+alpha = [0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 1, 1.5, 2, 3, 5]
 
 # List to store the DataFrames
 dfs = []
 i = 1
 # Iterate over all combinations
 for combination in itertools.product(n_actions, n_features, alpha):
+    print(i)
     # Unpack the combination
     n_action, n_feature, alpha_value = combination
 
@@ -404,34 +467,8 @@ final_df = pd.concat(dfs, ignore_index=True)
 
 initial_alpha = 1
 Total_steps = 5000
-n_actions = 5
-n_features = 5
+n_actions = 10
+n_features = 10
 
 Reduced_Vector, Vector = Target_Task_Optimization(n_actions, n_features,initial_alpha, Total_steps, Budget, final_df)
 
-
-# Reduced_Vector.columns = [['Number_of_Features', 'Number_of_Actions', 'High_Probability_of_Selecting',
-#                                 'Difference_Probability', 'Difference_Miu', 'Difference_Miu_Sigma', 'MAPE',
-#                                 'Alpha', 'Reward', 'Regret']]
-
-
-
-# Now final_df contains all your results
-
-# ##### Plot the results
-# plt.figure(figsize=(12, 6))
-#
-# plt.subplot(121)
-# plt.plot(cumulative_rewards)
-# plt.xlabel("Steps")
-# plt.ylabel("Cumulative Rewards")
-# plt.legend()
-#
-# plt.subplot(122)
-# plt.plot(cumulative_regrets)
-# plt.xlabel("Steps")
-# plt.ylabel("Cumulative Regrets")
-# plt.legend()
-#
-# plt.show()
-# #####
