@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import itertools
 from sklearn.gaussian_process import GaussianProcessRegressor
+import random
 
 pd.options.mode.chained_assignment = None  # Suppress SettingWithCopyWarning
 
@@ -545,7 +546,7 @@ def Bayesian_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Tot
     for z in range(0, Budget):
         if z == 0:
 
-            alpha = np.random.random()*10
+            alpha = np.random.uniform(0.01, 10)
             linucb_agent.update_alpha(alpha)
 
         if z >= 1:
@@ -659,6 +660,471 @@ bandit = Main_Bandit
 Reduced_Vector_Bayesian, Vector_Bayesian = Bayesian_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary)
 
 
+def RandomSearch_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary):
+
+    bandit = bandit
+
+    linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
+
+
+    agents = [linucb_agent]
+
+    n_steps = int(Total_steps / Budget)
+
+    cumulative_rewards = np.zeros(Total_steps)
+    cumulative_regrets = np.zeros(Total_steps)
+
+    agent = linucb_agent
+
+    Selected_Actions = np.zeros((Total_steps, n_actions))
+    Selected_Actions = pd.DataFrame(Selected_Actions)
+
+    Predicted_Rewards = np.zeros((Total_steps, n_actions))
+    Predicted_Rewards = pd.DataFrame(Predicted_Rewards)
+
+    Predicted_Miu = np.zeros((Total_steps, n_actions))
+    Predicted_Miu = pd.DataFrame(Predicted_Miu)
+
+    Predicted_Sigma = np.zeros((Total_steps, n_actions))
+    Predicted_Sigma = pd.DataFrame(Predicted_Sigma)
+
+    Vector = np.zeros((Total_steps, 13))
+    Vector = pd.DataFrame(Vector)
+    Reduced_Vector = pd.DataFrame(np.zeros((Budget, Vector.shape[1]+1)))
+
+    Alpha_Vector = []
+    min_func_val = np.inf
+
+    for z in range(0, Budget):
+        epsilon = 0.5
+        if z == 0:
+            alpha = np.random.uniform(0.01, 10)
+            linucb_agent.update_alpha(alpha)
+            best_alpha = alpha
+
+        if z >= 1:
+
+            if Reduced_Vector[9].iloc[z - 1] < min_func_val:
+                min_func_val = Reduced_Vector[9].iloc[z - 1]
+                best_alpha = alpha
+            if np.random.random() <= epsilon:
+                alpha = np.random.uniform(0.01, 10)
+            else:
+                alpha = best_alpha
+
+            linucb_agent.update_alpha(alpha)
+
+        Alpha_Vector.append(alpha)
+
+        if(z==Non_Stationary_Step and Non_Stationary == True):
+            bandit.update_theta(bandit.theta+np.random.random()*5)
+
+        for o in range(0, n_steps):
+
+            # if t >= 2*(n_steps/Budget):
+            #     if t % (n_steps/Budget) == 0:
+            #         alpha = HPO()
+            #         linucb_agent.update_alpha(alpha)
+            # else:
+            #     alpha = initial_alpha
+
+            t = o + z * n_steps
+
+            x = np.random.randn(n_features)
+            pred_rewards, miu, sigma = agent.predict([x])
+            Predicted_Rewards.iloc[t] = pred_rewards
+            Predicted_Miu.iloc[t] = miu
+            Predicted_Sigma.iloc[t] = sigma
+
+            action = np.argmax(pred_rewards)
+            # Selected_Actions[action] = Selected_Actions[action] + 1
+            reward, optimal_reward, worst_reward = bandit.get_reward(action, x)
+            # optimal_reward = bandit.get_optimal_reward(x)
+            agent.update(action, x, reward)
+
+            # To Calculate the MAPE of Prediction in each step
+
+            Vector[6].iloc[t] = np.abs((reward - np.argmax(pred_rewards)) / reward)
+            Vector[7].iloc[t] = alpha
+
+            if t == 0:
+                Selected_Actions[action].iloc[t] = 1
+                Vector[8].iloc[t] = reward
+                Vector[9].iloc[t] = optimal_reward
+                Vector[10].iloc[t] = worst_reward
+
+                cumulative_rewards[t] = reward
+                cumulative_regrets[t] = optimal_reward - reward
+            else:
+                for i in range(0, n_actions):
+                    if i == action:
+                        Selected_Actions[i].iloc[t] = Selected_Actions[i].iloc[t - 1] + 1
+                    else:
+                        Selected_Actions[i].iloc[t] = Selected_Actions[i].iloc[t - 1]
+                cumulative_rewards[t] = cumulative_rewards[t - 1] + reward
+                cumulative_regrets[t] = cumulative_regrets[t - 1] + optimal_reward - reward
+                Vector[8].iloc[t] = reward
+                Vector[9].iloc[t] = optimal_reward
+                Vector[10].iloc[t] = worst_reward
+
+
+            # The Highest Probability of Selecting an Arm
+            Vector[2].iloc[t] = (Selected_Actions.iloc[t].max() / (t + 1)) / (1 / n_actions)
+
+            # Finding the Difference between the Best and Second Arm
+            Vector[3].iloc[t] = ((Selected_Actions.iloc[t].max() - Selected_Actions.iloc[t].nlargest(2).iloc[-1]) / (
+                        t + 1)) / (1 / n_actions)
+
+            # Finding the Difference between the Best and Second Miu
+            Vector[4].iloc[t] = np.abs((Predicted_Miu.iloc[t].max() - Predicted_Miu.iloc[t].nlargest(2).iloc[-1]) / (
+                        Predicted_Miu.iloc[t].max() - Predicted_Miu.iloc[t].min()))
+
+            # Finding the Difference between the Best and Second Miu+Sigma
+            Vector[5].iloc[t] = np.abs(((Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).max() -
+                                        (Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).nlargest(2).iloc[-1]) / (
+                                                (Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).max() - (
+                                                    Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).min()))
+
+            Vector[11].iloc[t] = (Vector[8].iloc[t] - Vector[10].iloc[t]) / (Vector[9].iloc[t] - Vector[10].iloc[t])
+
+            Vector[12].iloc[t] = 1 - Vector[11].iloc[t]
+
+
+        # Number of Features
+        Vector[0] = n_features
+        # Number of Actions
+        Vector[1] = n_actions
+
+        length = n_steps
+
+        Reduced_Vector[0].iloc[z] = n_features
+        Reduced_Vector[1].iloc[z] = n_actions
+        Reduced_Vector[2].iloc[z] = Vector[2].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[3].iloc[z] = Vector[3].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[4].iloc[z] = Vector[4].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[5].iloc[z] = Vector[5].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[6].iloc[z] = Vector[6].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[8].iloc[z] = Vector[11].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[9].iloc[z] = Vector[12].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[10].iloc[z] = z
+        Reduced_Vector[11].iloc[z] = alpha
+        Reduced_Vector[12].iloc[z] = Vector[7].iloc[int(z*length):int((z+1)*length)].mean()
+    Reduced_Vector[7] = 0
+    Reduced_Vector[7] = Reduced_Vector[12]
+
+    return Reduced_Vector, Vector
+
+bandit = Main_Bandit
+Reduced_Vector_RandomSearch, Vector_RandomSearch = RandomSearch_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary)
+
+
+def GradualDecresement_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary):
+
+    bandit = bandit
+
+    linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
+
+
+    agents = [linucb_agent]
+
+    n_steps = int(Total_steps / Budget)
+
+    cumulative_rewards = np.zeros(Total_steps)
+    cumulative_regrets = np.zeros(Total_steps)
+
+    agent = linucb_agent
+
+    Selected_Actions = np.zeros((Total_steps, n_actions))
+    Selected_Actions = pd.DataFrame(Selected_Actions)
+
+    Predicted_Rewards = np.zeros((Total_steps, n_actions))
+    Predicted_Rewards = pd.DataFrame(Predicted_Rewards)
+
+    Predicted_Miu = np.zeros((Total_steps, n_actions))
+    Predicted_Miu = pd.DataFrame(Predicted_Miu)
+
+    Predicted_Sigma = np.zeros((Total_steps, n_actions))
+    Predicted_Sigma = pd.DataFrame(Predicted_Sigma)
+
+    Vector = np.zeros((Total_steps, 13))
+    Vector = pd.DataFrame(Vector)
+    Reduced_Vector = pd.DataFrame(np.zeros((Budget, Vector.shape[1]+1)))
+
+    Alpha_Vector = []
+    min_func_val = np.inf
+
+    for z in range(0, Budget):
+
+        alpha = 10 /(z+1)
+        linucb_agent.update_alpha(alpha)
+
+        Alpha_Vector.append(alpha)
+
+        if(z==Non_Stationary_Step and Non_Stationary == True):
+            bandit.update_theta(bandit.theta+np.random.random()*5)
+
+        for o in range(0, n_steps):
+
+            # if t >= 2*(n_steps/Budget):
+            #     if t % (n_steps/Budget) == 0:
+            #         alpha = HPO()
+            #         linucb_agent.update_alpha(alpha)
+            # else:
+            #     alpha = initial_alpha
+
+            t = o + z * n_steps
+
+            x = np.random.randn(n_features)
+            pred_rewards, miu, sigma = agent.predict([x])
+            Predicted_Rewards.iloc[t] = pred_rewards
+            Predicted_Miu.iloc[t] = miu
+            Predicted_Sigma.iloc[t] = sigma
+
+            action = np.argmax(pred_rewards)
+            # Selected_Actions[action] = Selected_Actions[action] + 1
+            reward, optimal_reward, worst_reward = bandit.get_reward(action, x)
+            # optimal_reward = bandit.get_optimal_reward(x)
+            agent.update(action, x, reward)
+
+            # To Calculate the MAPE of Prediction in each step
+
+            Vector[6].iloc[t] = np.abs((reward - np.argmax(pred_rewards)) / reward)
+            Vector[7].iloc[t] = alpha
+
+            if t == 0:
+                Selected_Actions[action].iloc[t] = 1
+                Vector[8].iloc[t] = reward
+                Vector[9].iloc[t] = optimal_reward
+                Vector[10].iloc[t] = worst_reward
+
+                cumulative_rewards[t] = reward
+                cumulative_regrets[t] = optimal_reward - reward
+            else:
+                for i in range(0, n_actions):
+                    if i == action:
+                        Selected_Actions[i].iloc[t] = Selected_Actions[i].iloc[t - 1] + 1
+                    else:
+                        Selected_Actions[i].iloc[t] = Selected_Actions[i].iloc[t - 1]
+                cumulative_rewards[t] = cumulative_rewards[t - 1] + reward
+                cumulative_regrets[t] = cumulative_regrets[t - 1] + optimal_reward - reward
+                Vector[8].iloc[t] = reward
+                Vector[9].iloc[t] = optimal_reward
+                Vector[10].iloc[t] = worst_reward
+
+
+            # The Highest Probability of Selecting an Arm
+            Vector[2].iloc[t] = (Selected_Actions.iloc[t].max() / (t + 1)) / (1 / n_actions)
+
+            # Finding the Difference between the Best and Second Arm
+            Vector[3].iloc[t] = ((Selected_Actions.iloc[t].max() - Selected_Actions.iloc[t].nlargest(2).iloc[-1]) / (
+                        t + 1)) / (1 / n_actions)
+
+            # Finding the Difference between the Best and Second Miu
+            Vector[4].iloc[t] = np.abs((Predicted_Miu.iloc[t].max() - Predicted_Miu.iloc[t].nlargest(2).iloc[-1]) / (
+                        Predicted_Miu.iloc[t].max() - Predicted_Miu.iloc[t].min()))
+
+            # Finding the Difference between the Best and Second Miu+Sigma
+            Vector[5].iloc[t] = np.abs(((Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).max() -
+                                        (Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).nlargest(2).iloc[-1]) / (
+                                                (Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).max() - (
+                                                    Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).min()))
+
+            Vector[11].iloc[t] = (Vector[8].iloc[t] - Vector[10].iloc[t]) / (Vector[9].iloc[t] - Vector[10].iloc[t])
+
+            Vector[12].iloc[t] = 1 - Vector[11].iloc[t]
+
+
+        # Number of Features
+        Vector[0] = n_features
+        # Number of Actions
+        Vector[1] = n_actions
+
+        length = n_steps
+
+        Reduced_Vector[0].iloc[z] = n_features
+        Reduced_Vector[1].iloc[z] = n_actions
+        Reduced_Vector[2].iloc[z] = Vector[2].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[3].iloc[z] = Vector[3].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[4].iloc[z] = Vector[4].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[5].iloc[z] = Vector[5].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[6].iloc[z] = Vector[6].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[8].iloc[z] = Vector[11].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[9].iloc[z] = Vector[12].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[10].iloc[z] = z
+        Reduced_Vector[11].iloc[z] = alpha
+        Reduced_Vector[12].iloc[z] = Vector[7].iloc[int(z*length):int((z+1)*length)].mean()
+    Reduced_Vector[7] = 0
+    Reduced_Vector[7] = Reduced_Vector[12]
+
+    return Reduced_Vector, Vector
+
+bandit = Main_Bandit
+Reduced_Vector_GradualDecresement, Vector_GradualDecresement = GradualDecresement_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary)
+
+
+
+def BOBSoftmax_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary):
+
+    bandit = bandit
+
+    linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
+
+
+    agents = [linucb_agent]
+
+    n_steps = int(Total_steps / Budget)
+
+    cumulative_rewards = np.zeros(Total_steps)
+    cumulative_regrets = np.zeros(Total_steps)
+
+    agent = linucb_agent
+
+    Selected_Actions = np.zeros((Total_steps, n_actions))
+    Selected_Actions = pd.DataFrame(Selected_Actions)
+
+    Predicted_Rewards = np.zeros((Total_steps, n_actions))
+    Predicted_Rewards = pd.DataFrame(Predicted_Rewards)
+
+    Predicted_Miu = np.zeros((Total_steps, n_actions))
+    Predicted_Miu = pd.DataFrame(Predicted_Miu)
+
+    Predicted_Sigma = np.zeros((Total_steps, n_actions))
+    Predicted_Sigma = pd.DataFrame(Predicted_Sigma)
+
+    Vector = np.zeros((Total_steps, 13))
+    Vector = pd.DataFrame(Vector)
+    Reduced_Vector = pd.DataFrame(np.zeros((Budget, Vector.shape[1]+1)))
+
+    Alpha_Vector = []
+    min_func_val = np.inf
+    alpha_range = [0.1, 0.5, 1, 5, 10]
+    selected_alpha = np.zeros((len(alpha_range),4))
+    selected_alpha = pd.DataFrame(selected_alpha)
+
+    for z in range(0, Budget):
+        if z == 0:
+            index = random.randrange(len(alpha_range))
+            alpha = alpha_range[index]
+            selected_alpha[0].iloc[index] = selected_alpha[0].iloc[index] + 1
+            linucb_agent.update_alpha(alpha)
+
+        if z >= 1:
+
+            selected_alpha[1].iloc[index] = selected_alpha[1].iloc[index] + (1 - Reduced_Vector[9].iloc[z - 1])
+            for l in range(0, len(selected_alpha)):
+                if selected_alpha[0].iloc[l] == 0:
+                    selected_alpha[2].iloc[l] = 0.7
+                else:
+                    selected_alpha[2].iloc[l] = selected_alpha[1].iloc[l] / selected_alpha[0].iloc[l]
+
+            selected_alpha[3] = np.exp(selected_alpha[2])
+            selected_alpha[3] = selected_alpha[3] / selected_alpha[3].sum()
+            alpha = np.random.choice(alpha_range, 1, p=list(selected_alpha[3]))[0]
+            index = alpha_range.index(alpha)
+            selected_alpha[0].iloc[index] = selected_alpha[0].iloc[index] + 1
+            linucb_agent.update_alpha(alpha)
+
+
+        if(z==Non_Stationary_Step and Non_Stationary == True):
+            bandit.update_theta(bandit.theta+np.random.random()*5)
+
+        for o in range(0, n_steps):
+
+            # if t >= 2*(n_steps/Budget):
+            #     if t % (n_steps/Budget) == 0:
+            #         alpha = HPO()
+            #         linucb_agent.update_alpha(alpha)
+            # else:
+            #     alpha = initial_alpha
+
+            t = o + z * n_steps
+
+            x = np.random.randn(n_features)
+            pred_rewards, miu, sigma = agent.predict([x])
+            Predicted_Rewards.iloc[t] = pred_rewards
+            Predicted_Miu.iloc[t] = miu
+            Predicted_Sigma.iloc[t] = sigma
+
+            action = np.argmax(pred_rewards)
+            # Selected_Actions[action] = Selected_Actions[action] + 1
+            reward, optimal_reward, worst_reward = bandit.get_reward(action, x)
+            # optimal_reward = bandit.get_optimal_reward(x)
+            agent.update(action, x, reward)
+
+            # To Calculate the MAPE of Prediction in each step
+
+            Vector[6].iloc[t] = np.abs((reward - np.argmax(pred_rewards)) / reward)
+            Vector[7].iloc[t] = alpha
+
+            if t == 0:
+                Selected_Actions[action].iloc[t] = 1
+                Vector[8].iloc[t] = reward
+                Vector[9].iloc[t] = optimal_reward
+                Vector[10].iloc[t] = worst_reward
+
+                cumulative_rewards[t] = reward
+                cumulative_regrets[t] = optimal_reward - reward
+            else:
+                for i in range(0, n_actions):
+                    if i == action:
+                        Selected_Actions[i].iloc[t] = Selected_Actions[i].iloc[t - 1] + 1
+                    else:
+                        Selected_Actions[i].iloc[t] = Selected_Actions[i].iloc[t - 1]
+                cumulative_rewards[t] = cumulative_rewards[t - 1] + reward
+                cumulative_regrets[t] = cumulative_regrets[t - 1] + optimal_reward - reward
+                Vector[8].iloc[t] = reward
+                Vector[9].iloc[t] = optimal_reward
+                Vector[10].iloc[t] = worst_reward
+
+
+            # The Highest Probability of Selecting an Arm
+            Vector[2].iloc[t] = (Selected_Actions.iloc[t].max() / (t + 1)) / (1 / n_actions)
+
+            # Finding the Difference between the Best and Second Arm
+            Vector[3].iloc[t] = ((Selected_Actions.iloc[t].max() - Selected_Actions.iloc[t].nlargest(2).iloc[-1]) / (
+                        t + 1)) / (1 / n_actions)
+
+            # Finding the Difference between the Best and Second Miu
+            Vector[4].iloc[t] = np.abs((Predicted_Miu.iloc[t].max() - Predicted_Miu.iloc[t].nlargest(2).iloc[-1]) / (
+                        Predicted_Miu.iloc[t].max() - Predicted_Miu.iloc[t].min()))
+
+            # Finding the Difference between the Best and Second Miu+Sigma
+            Vector[5].iloc[t] = np.abs(((Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).max() -
+                                        (Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).nlargest(2).iloc[-1]) / (
+                                                (Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).max() - (
+                                                    Predicted_Miu.iloc[t] + Predicted_Sigma.iloc[t]).min()))
+
+            Vector[11].iloc[t] = (Vector[8].iloc[t] - Vector[10].iloc[t]) / (Vector[9].iloc[t] - Vector[10].iloc[t])
+
+            Vector[12].iloc[t] = 1 - Vector[11].iloc[t]
+
+
+        # Number of Features
+        Vector[0] = n_features
+        # Number of Actions
+        Vector[1] = n_actions
+
+        length = n_steps
+
+        Reduced_Vector[0].iloc[z] = n_features
+        Reduced_Vector[1].iloc[z] = n_actions
+        Reduced_Vector[2].iloc[z] = Vector[2].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[3].iloc[z] = Vector[3].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[4].iloc[z] = Vector[4].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[5].iloc[z] = Vector[5].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[6].iloc[z] = Vector[6].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[8].iloc[z] = Vector[11].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[9].iloc[z] = Vector[12].iloc[int(z*length):int((z+1)*length)].mean()
+        Reduced_Vector[10].iloc[z] = z
+        Reduced_Vector[11].iloc[z] = alpha
+        Reduced_Vector[12].iloc[z] = Vector[7].iloc[int(z*length):int((z+1)*length)].mean()
+    Reduced_Vector[7] = 0
+    Reduced_Vector[7] = Reduced_Vector[12]
+
+    return Reduced_Vector, Vector
+
+bandit = Main_Bandit
+Reduced_Vector_BOBSoftmax, Vector_BOBSoftmax = BOBSoftmax_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary)
 
 
 # Reduced_Vector.columns = [['Number_of_Features', 'Number_of_Actions', 'High_Probability_of_Selecting',
