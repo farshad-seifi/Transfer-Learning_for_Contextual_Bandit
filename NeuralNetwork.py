@@ -8,9 +8,11 @@ import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from sklearn.utils import shuffle
 
 pd.options.mode.chained_assignment = None  # Suppress SettingWithCopyWarning
 
+# The main Bandit class
 class Bandit:
     def __init__(self, n_actions, n_features):
         self.n_actions = n_actions
@@ -23,6 +25,7 @@ class Bandit:
         :param new_alpha: The new value for alpha.
         """
         self.theta = new_theta
+
     def get_reward(self, action, x):
 
         randomness = np.random.normal()
@@ -35,7 +38,7 @@ class Bandit:
 
         return Reward, Optimal_Reward, Worst_Reward
 
-
+# The neural network object
 class NeuralNetwork(nn.Module):
     def __init__(self, n_features):
         super(NeuralNetwork, self).__init__()
@@ -46,52 +49,7 @@ class NeuralNetwork(nn.Module):
     def forward(self, x):
         return self.layer(x)
 
-
-# class NeuralBandit:
-#     def __init__(self, n_actions, n_features, learning_rate, momentum):
-#         self.n_actions = n_actions
-#         self.n_features = n_features
-#         self.learning_rate = learning_rate
-#         self.momentum = momentum
-#         # Initialize the neural network model for each action
-#         self.models = [NeuralNetwork(n_features) for _ in range(n_actions)]
-#         self.optimizers = [
-#             optim.SGD(model.parameters(), lr=self.learning_rate, momentum=self.momentum)
-#             for model in self.models
-#         ]
-#         self.criterion = nn.MSELoss()
-#
-#     def update_alpha(self, new_learning_rate, new_momentum):
-#         """
-#         Update the value of alpha.
-#         :param new_alpha: The new value for alpha.
-#         """
-#         self.learning_rate = new_learning_rate
-#         self.momentum = new_momentum
-#
-#         # Update the learning rate and momentum for all optimizers
-#         # for optimizer in self.optimizers:
-#         #     for param_group in optimizer.param_groups:
-#         #         param_group['lr'] = new_learning_rate
-#         #         param_group['momentum'] = new_momentum
-#
-#
-#     def predict(self, context):
-#         context_tensor = torch.tensor(context, dtype=torch.float32)  # Convert to tensor
-#         with torch.no_grad():
-#             return torch.cat(
-#                 [model(context_tensor).reshape(1) for model in self.models]
-#             )
-#
-#     def update(self, action, context, reward):
-#         self.optimizers[action].zero_grad()
-#         context_tensor = torch.tensor(context, dtype=torch.float32)  # Convert to tensor
-#         reward_tensor = torch.tensor(reward, dtype=torch.float32)  # Convert to tensor
-#         pred_reward = self.models[action](context_tensor)
-#         loss = self.criterion(pred_reward, reward_tensor)
-#         loss.backward()
-#         self.optimizers[action].step()
-
+# The neural bandit class updates neural network weights and predict the rewards
 class NeuralBandit:
     def __init__(self, n_actions, n_features, learning_rate, momentum):
         self.n_actions = n_actions
@@ -133,7 +91,19 @@ class NeuralBandit:
         self.learning_rate = new_learning_rate
         self.momentum = new_momentum
 
+# The simulation function which generates data for transfer learning
 def Simulator(n_actions, n_features, learning_rate, momentum, Budget, n_steps, Non_Stationary_Step, Non_Stationary ):
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param learning_rate: learning rate of neural network
+    :param momentum: momentum of the neural network
+    :param Budget: Number of steps in which data are gathered and summarized
+    :param n_steps: Available budget for bandit's run
+    :param Non_Stationary_Step: Number of step in which reward function is changed
+    :param Non_Stationary: Stationary status - True means there is changes in reward function
+    :return: A dataframe which is a knowledge based for transfer learning
+    """
     bandit = Bandit(n_actions, n_features)
     neural_agent = NeuralBandit(n_actions, n_features, learning_rate, momentum)
 
@@ -158,8 +128,9 @@ def Simulator(n_actions, n_features, learning_rate, momentum, Budget, n_steps, N
 
 
         if (Non_Stationary == True) and  (t == (n_steps/Budget) * Non_Stationary_Step):
-            bandit.update_theta(-bandit.theta)
+            new_coef = shuffle(bandit.theta)
 
+            bandit.update_theta(new_coef)
 
         learning_rate = learning_rate
         x = np.random.randn(n_features)
@@ -244,14 +215,23 @@ def Simulator(n_actions, n_features, learning_rate, momentum, Budget, n_steps, N
 
     return Reduced_Vector
 
+## Combinations of different parameters to generate a knowledge-based for transfer learning by simulation
 
+# Number of steps in which data are gathered and summarized
 Budget = 50
+# Available budget for bandit's run
 n_steps = 5000
+# Number of actions
 n_actions = [5, 7, 10, 12, 15]
+# Number of features
 n_features = [3, 5, 7, 10, 12, 15]
+# Learning Rate
 learning_rates = [0.0001, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2]
-momentums = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
-replication = [1,2,3]
+# Momentum
+momentums = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+# Number of replications in simulation
+replication = [1, 2, 3]
+# Stationary status- if it is true reward function is changed in some steps
 Non_Stationary = True
 Non_Stationary_Step = 25
 
@@ -276,12 +256,16 @@ for combination in itertools.product(n_actions, n_features, learning_rates, mome
     dfs.append(result_df)
 
 # Concatenate all DataFrames into one
-final_df = pd.concat(dfs, ignore_index=True)
-final_df.to_excel("NN_Final_Perturb2.xlsx")
-# final_df = pd.read_excel(r"C:\Users\fafar\OneDrive\Desktop\Desktop\PHD\thesis\Third Paper\Data\NN-Minus\NN_Final_Perturb.xlsx")
+# final_df = pd.concat(dfs, ignore_index=True)
+# final_df.to_excel("NN_Final_Shuffle.xlsx")
 
 def Data_Selector(Data, n, Budget):
-
+    """
+    :param Data: Simulation data set
+    :param n: current step
+    :param Budget: Total steps
+    :return: Features dataset and Regret column
+    """
     output = np.zeros((Data['Simulation'].max()[0], Data.shape[1]))
     output = pd.DataFrame(output)
 
@@ -560,9 +544,9 @@ Main_Bandit = Bandit(n_actions, n_features)
 bandit = Main_Bandit
 Main_theta = Main_Bandit.theta
 bandit.theta = Main_theta
-New_theta = - Main_theta
+# New_theta = - Main_theta
 # New_theta = Main_theta + np.random.random()*5
-# New_theta = shuffle(Main_theta)
+New_theta = shuffle(Main_theta)
 Reduced_Vector_Algorithm, Vector_Algorithm, bandit_new = Target_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
 
 
@@ -1367,9 +1351,9 @@ bandit.theta = Main_theta
 Reduced_Vector_BOBBOBUCB, Vector_BOBBOBUCB = BOBUCB_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
 
 
-Reduced_Vector_Algorithm.to_excel("Reduced_Vector_Algorithm_Shuffle_NN_10_10_2.xlsx")
-Reduced_Vector_Bayesian.to_excel("Reduced_Vector_Bayesian_Shuffle_NN_10_10_2.xlsx")
-Reduced_Vector_BOBSoftmax.to_excel("Reduced_Vector_BOBSoftmax_Shuffle_NN_10_10_2.xlsx")
-Reduced_Vector_GradualDecresement.to_excel("Reduced_Vector_GradualDecresement_Shuffle_NN_10_10_2.xlsx")
-Reduced_Vector_RandomSearch.to_excel("Reduced_Vector_RandomSearch_Shuffle_NN_10_10_2.xlsx")
-Reduced_Vector_BOBBOBUCB.to_excel("Reduced_Vector_BOBBOBUCB_Shuffle_NN_10_10_2.xlsx")
+Reduced_Vector_Algorithm.to_excel("Reduced_Vector_Algorithm_Shuffle_Asli_NN_10_10_5.xlsx")
+Reduced_Vector_Bayesian.to_excel("Reduced_Vector_Bayesian_Shuffle_Asli_NN_10_10_5.xlsx")
+Reduced_Vector_BOBSoftmax.to_excel("Reduced_Vector_BOBSoftmax_Shuffle_Asli_NN_10_10_5.xlsx")
+Reduced_Vector_GradualDecresement.to_excel("Reduced_Vector_GradualDecresement_Shuffle_Asli_NN_10_10_5.xlsx")
+Reduced_Vector_RandomSearch.to_excel("Reduced_Vector_RandomSearch_Shuffle_Asli_NN_10_10_5.xlsx")
+Reduced_Vector_BOBBOBUCB.to_excel("Reduced_Vector_BOBBOBUCB_Shuffle_Asli_NN_10_10_5.xlsx")
