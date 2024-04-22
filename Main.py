@@ -5,10 +5,11 @@ import itertools
 from sklearn.gaussian_process import GaussianProcessRegressor
 import random
 import math
+from sklearn.utils import shuffle
 
 pd.options.mode.chained_assignment = None  # Suppress SettingWithCopyWarning
 
-
+# The main Bandit class
 class Bandit:
     def __init__(self, n_actions, n_features):
         self.n_actions = n_actions
@@ -17,8 +18,8 @@ class Bandit:
 
     def update_theta(self, new_theta):
         """
-        Update the value of alpha.
-        :param new_alpha: The new value for alpha.
+        Update the value of theta.
+        :param new_theta: The new value for theta.
         """
         self.theta = new_theta
     def get_reward(self, action, x):
@@ -34,7 +35,7 @@ class Bandit:
         return Reward, Optimal_Reward, Worst_Reward
 
 
-
+# The LinUCB object
 class LinUCB:
     def __init__(self, n_actions, n_features, alpha):
         self.n_actions = n_actions
@@ -75,8 +76,18 @@ class LinUCB:
         self.b[action] += reward * context  # b_a = b_a + r_t * x_tx
 
 
-
+# The simulation function which generates data for transfer learning
 def Simulator(n_actions, n_features, alpha, Budget, n_steps, Non_Stationary_Step, Non_Stationary ):
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param alpha: Initial value of alpha
+    :param Budget: Number of steps in which data are gathered and summarized
+    :param n_steps: Available budget for bandit's run
+    :param Non_Stationary_Step: Number of step in which reward function is changed
+    :param Non_Stationary: Stationary status - True means there is changes in reward function
+    :return: A dataframe which is a knowledge based for transfer learning
+    """
     bandit = Bandit(n_actions, n_features)
 
     linucb_agent = LinUCB(n_actions, n_features, alpha)
@@ -107,7 +118,9 @@ def Simulator(n_actions, n_features, alpha, Budget, n_steps, Non_Stationary_Step
 
 
         if (Non_Stationary == True) and  (t == (n_steps/Budget) * Non_Stationary_Step):
-            bandit.update_theta(bandit.theta+np.random.random()*5)
+            new_coef = shuffle(bandit.theta)
+
+            bandit.update_theta(new_coef)
 
 
         alpha = alpha
@@ -205,10 +218,58 @@ def Simulator(n_actions, n_features, alpha, Budget, n_steps, Non_Stationary_Step
 
     return Reduced_Vector
 
+## Combinations of different parameters to generate a knowledge-based for transfer learning by simulation
 
+# Available budget for bandit's run
+Budget = 50
+# Number of steps in which data are gathered and summarized
+n_steps = 5000
+# Number of actions
+n_actions = [5, 7, 10, 12, 15]
+# Number of features
+n_features = [3, 5, 7, 10, 12, 15]
+# Alpha
+alpha = [0.1, 0.3, 0.5, 0.75, 1, 3, 5, 7, 10]
+# Number of replications in simulation
+replication = [1,2,3,4, 5]
+# Stationary status- if it is true reward function is changed in some steps
+Non_Stationary = True
+Non_Stationary_Step = 20
+
+# List to store the DataFrames
+dfs = []
+i = 1
+# Iterate over all combinations
+for combination in itertools.product(n_actions, n_features, alpha, replication):
+    print(i)
+    # Unpack the combination
+    n_action, n_feature, alpha_value, replication = combination
+
+    # Call your Simulator function
+    result_df = Simulator(n_action, n_feature, alpha_value, Budget, n_steps, Non_Stationary_Step, Non_Stationary)
+
+    # Adding the parameters as columns to the DataFrame
+    result_df['Simulation'] = i
+    result_df['Replication'] = replication
+    i = i + 1
+
+    # Append the result to the list
+    dfs.append(result_df)
+
+# Concatenate all DataFrames into one
+final_df = pd.concat(dfs, ignore_index=True)
+# final_df.to_excel("final_df_shuffle.xlsx")
+# final_df = pd.read_excel(r"C:\Users\fafar\OneDrive\Desktop\Desktop\PHD\thesis\Third Paper\Data\Shuffle\final_df_shuffle.xlsx")
+
+# Data Selector, selects an appropriate part of simulation data (based on number of iterations)
 def Data_Selector(Data, n, Budget):
-
-    output = np.zeros((Data['Simulation'].max()[0], Data.shape[1]))
+    """
+    :param Data: Simulation data set
+    :param n: current step
+    :param Budget: Total steps
+    :return: Features dataset and Regret column
+    """
+    output = np.zeros((Data['Simulation'].max(), Data.shape[1]))
     output = pd.DataFrame(output)
 
     output.columns = Data.columns
@@ -220,11 +281,19 @@ def Data_Selector(Data, n, Budget):
 
     return output, Regret
 
-
+# This function fits a gaussian model to transfer learning data and based on that proposes points for evaluations
 def HPO_Transfer(X, Y, input):
-    # Fit a Gaussian Mixture Model to your data
+    """
+    :param X: The features dataset
+    :param Y: Rewards
+    :param input:
+    :return: Optimum Hyperparameters
+    """
 
+    # Fit a Gaussian Mixture Model to your data
     gaussian_process = GaussianProcessRegressor()
+    X.columns = pd.RangeIndex(X.columns.size)
+
     gaussian_process.fit(X, Y)
 
 
@@ -243,10 +312,15 @@ def HPO_Transfer(X, Y, input):
 
     return Optimum_Alpha
 
-
+# This function fits another gaussian model to current task's historical data and based on that proposes points for evaluation
 def HPO_Sorrugate(Alpha_Vector, Result_Vector):
-    # Fit a Gaussian Mixture Model to your data
+    """
+    :param Alpha_Vector: Vector of evaluated hyperparameters
+    :param Result_Vector: Vector of gained rewards
+    :return: Optimum Hyperparameters
+    """
 
+    # Fit a Gaussian Mixture Model to your data
     gaussian_process = GaussianProcessRegressor()
     Alpha_Vector = pd.DataFrame(Alpha_Vector)
     gaussian_process.fit(Alpha_Vector[1:], Result_Vector[1:])
@@ -266,9 +340,20 @@ def HPO_Sorrugate(Alpha_Vector, Result_Vector):
 
     return Optimum_Alpha
 
-
+# This function compares the accuracy of two gaussian models and select the more accurate
 def Model_Selection(X, Y, Previous_Alpha, Alpha_Vector, Result_Vector, Previous_Input, Previous_Result):
+    """
+    :param X: Features' data set
+    :param Y: Rewards
+    :param Previous_Alpha: Last evaluated Alpha
+    :param Alpha_Vector: History of selected hyperparameters
+    :param Result_Vector: History of rewards
+    :param Previous_Input:
+    :param Previous_Result:
+    :return: Selected model
+    """
     gaussian_process = GaussianProcessRegressor()
+    X.columns = pd.RangeIndex(X.columns.size)
     gaussian_process.fit(X, Y)
     input = Previous_Input[:X.shape[1]]
     input[7] = Previous_Alpha
@@ -289,10 +374,22 @@ def Model_Selection(X, Y, Previous_Alpha, Alpha_Vector, Result_Vector, Previous_
     return Selected_model
 
 
+# TLCB algorithm for hyperparameter optimization
+def Target_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary,New_theta):
 
-def Target_Task_Optimization(n_actions, n_features, bandit,initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary):
-
-
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param bandit: Bandit model that should be optimized
+    :param initial_alpha: -
+    :param Total_steps: Number of optimization steps
+    :param Budget: Total budget
+    :param final_df: Simulation data that can be exerted for transfer learning
+    :param Non_Stationary_Step: The step in which reward function changes
+    :param Non_Stationary: The status of changing reward function
+    :param New_theta: The value of new theta in case of changing reward function
+    :return: Final results
+    """
 
     linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
 
@@ -351,8 +448,8 @@ def Target_Task_Optimization(n_actions, n_features, bandit,initial_alpha, Total_
         Alpha_Vector.append(alpha)
 
         if(z==Non_Stationary_Step and Non_Stationary == True):
-            bandit.update_theta(bandit.theta+np.random.random()*5)
-
+            bandit.theta = New_theta
+            bandit.update_theta(bandit.theta)
         for o in range(0, n_steps):
 
             # if t >= 2*(n_steps/Budget):
@@ -450,52 +547,31 @@ def Target_Task_Optimization(n_actions, n_features, bandit,initial_alpha, Total_
     return Reduced_Vector, Vector, bandit
 
 
-# Define the bandit environment
 
-Budget = 50
-n_steps = 5000
-n_actions = [5, 7, 10, 12, 15]
-n_features = [3, 5, 7, 10, 12, 15]
-alpha = [0.1, 0.3, 0.5, 0.75, 1, 3, 5, 7, 10]
-replication = [1,2,3,4,5]
-Non_Stationary = True
-Non_Stationary_Step = 20
-
-# List to store the DataFrames
-dfs = []
-i = 1
-# Iterate over all combinations
-for combination in itertools.product(n_actions, n_features, alpha, replication):
-    print(i)
-    # Unpack the combination
-    n_action, n_feature, alpha_value, replication = combination
-
-    # Call your Simulator function
-    result_df = Simulator(n_action, n_feature, alpha_value, Budget, n_steps, Non_Stationary_Step, Non_Stationary)
-
-    # Adding the parameters as columns to the DataFrame
-    result_df['Simulation'] = i
-    result_df['Replication'] = replication
-    i = i + 1
-
-    # Append the result to the list
-    dfs.append(result_df)
-
-# Concatenate all DataFrames into one
-final_df = pd.concat(dfs, ignore_index=True)
-
-
-
+# Bayesian algorithm for hyperparameter optimization
 def Bayesian_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta):
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param bandit: Bandit model that should be optimized
+    :param initial_alpha: -
+    :param Total_steps: Number of optimization steps
+    :param Budget: Total budget
+    :param final_df: Simulation data that can be exerted for transfer learning
+    :param Non_Stationary_Step: The step in which reward function changes
+    :param Non_Stationary: The status of changing reward function
+    :param New_theta: The value of new theta in case of changing reward function
+    :return: Final results
+    """
     def Acquisition(Alpha_Vector, Result_Vector):
         # Fit a Gaussian Mixture Model to your data
         gaussian_process = GaussianProcessRegressor()
         Alpha_Vector = pd.DataFrame(Alpha_Vector)
         gaussian_process.fit(Alpha_Vector, Result_Vector)
 
-        results = np.zeros((99, 2))
+        results = np.zeros((20, 2))
         results = pd.DataFrame(results)
-        for i in range(0, 99):
+        for i in range(0, 20):
             alpha = 10 / (i + 1)
             pd.DataFrame([alpha])
             mean_prediction, std_prediction = gaussian_process.predict(pd.DataFrame([alpha]), return_std=True)
@@ -653,9 +729,21 @@ def Bayesian_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Tot
 
 
 
-
+# Greedy strategy algorithm for hyperparameter optimization
 def RandomSearch_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta):
-
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param bandit: Bandit model that should be optimized
+    :param initial_alpha: -
+    :param Total_steps: Number of optimization steps
+    :param Budget: Total budget
+    :param final_df: Simulation data that can be exerted for transfer learning
+    :param Non_Stationary_Step: The step in which reward function changes
+    :param Non_Stationary: The status of changing reward function
+    :param New_theta: The value of new theta in case of changing reward function
+    :return: Final results
+    """
     bandit = bandit
 
     linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
@@ -809,9 +897,21 @@ def RandomSearch_Task_Optimization(n_actions, n_features, bandit, initial_alpha,
     return Reduced_Vector, Vector, bandit
 
 
-
+# Gradual decrease algorithm for hyperparameter optimization
 def GradualDecresement_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta):
-
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param bandit: Bandit model that should be optimized
+    :param initial_alpha: -
+    :param Total_steps: Number of optimization steps
+    :param Budget: Total budget
+    :param final_df: Simulation data that can be exerted for transfer learning
+    :param Non_Stationary_Step: The step in which reward function changes
+    :param Non_Stationary: The status of changing reward function
+    :param New_theta: The value of new theta in case of changing reward function
+    :return: Final results
+    """
     bandit = bandit
 
     linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
@@ -847,7 +947,7 @@ def GradualDecresement_Task_Optimization(n_actions, n_features, bandit, initial_
 
     for z in range(0, Budget):
 
-        alpha = 10 /(z+1)
+        alpha = 10 /(z+10)
         linucb_agent.update_alpha(alpha)
 
         Alpha_Vector.append(alpha)
@@ -951,9 +1051,22 @@ def GradualDecresement_Task_Optimization(n_actions, n_features, bandit, initial_
     return Reduced_Vector, Vector, bandit
 
 
-
+# Bandit-over-bandit (SoftMax) algorithm for hyperparameter optimization
 def BOBSoftmax_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta):
 
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param bandit: Bandit model that should be optimized
+    :param initial_alpha: -
+    :param Total_steps: Number of optimization steps
+    :param Budget: Total budget
+    :param final_df: Simulation data that can be exerted for transfer learning
+    :param Non_Stationary_Step: The step in which reward function changes
+    :param Non_Stationary: The status of changing reward function
+    :param New_theta: The value of new theta in case of changing reward function
+    :return: Final results
+    """
     bandit = bandit
 
     linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
@@ -986,7 +1099,7 @@ def BOBSoftmax_Task_Optimization(n_actions, n_features, bandit, initial_alpha, T
 
     Alpha_Vector = []
     min_func_val = np.inf
-    alpha_range = [0.1, 0.5, 1, 5, 10]
+    alpha_range = [0.1, 0.5, 1, 3, 5, 7, 10]
     selected_alpha = np.zeros((len(alpha_range),4))
     selected_alpha = pd.DataFrame(selected_alpha)
 
@@ -1113,9 +1226,21 @@ def BOBSoftmax_Task_Optimization(n_actions, n_features, bandit, initial_alpha, T
     return Reduced_Vector, Vector
 
 
-
+# Bandit-over-bandit (UCB) algorithm for hyperparameter optimization
 def BOBUCB_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta):
-
+    """
+    :param n_actions: Number of actions
+    :param n_features: Number of features
+    :param bandit: Bandit model that should be optimized
+    :param initial_alpha: -
+    :param Total_steps: Number of optimization steps
+    :param Budget: Total budget
+    :param final_df: Simulation data that can be exerted for transfer learning
+    :param Non_Stationary_Step: The step in which reward function changes
+    :param Non_Stationary: The status of changing reward function
+    :param New_theta: The value of new theta in case of changing reward function
+    :return: Final results
+    """
     bandit = bandit
 
     linucb_agent = LinUCB(n_actions, n_features, initial_alpha)
@@ -1148,7 +1273,7 @@ def BOBUCB_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total
 
     Alpha_Vector = []
     min_func_val = np.inf
-    alpha_range = [0.1, 0.5, 1, 5, 10]
+    alpha_range = [0.01, 0.1, 0.5, 1, 3, 5, 7, 10]
     random.shuffle(alpha_range)
     selected_alpha = np.zeros((len(alpha_range),4))
     selected_alpha = pd.DataFrame(selected_alpha)
@@ -1272,73 +1397,49 @@ def BOBUCB_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total
 
 
 
-
-# Reduced_Vector.columns = [['Number_of_Features', 'Number_of_Actions', 'High_Probability_of_Selecting',
-#                                 'Difference_Probability', 'Difference_Miu', 'Difference_Miu_Sigma', 'MAPE',
-#                                 'Alpha', 'Reward', 'Regret']]
-
-
-
-
-#########################################
-
 initial_alpha = 1
+# Total steps for optimization
 Total_steps = 5000
-n_actions = 10
-n_features = 10
+# Number of actions
+n_actions = 12
+# Number of features
+n_features = 12
+
+# Initializing main bandit
 Main_Bandit = Bandit(n_actions, n_features)
 
 Main_theta = Main_Bandit.theta
 bandit = Main_Bandit
 bandit.theta = Main_theta
-Reduced_Vector_Algorithm, Vector_Algorithm, bandit_new = Target_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary)
+# Changing the reward function
+New_theta = shuffle(Main_theta)
+# New_theta = - Main_theta
 
-New_theta = bandit_new.theta
-
-
+# Running TLCB algorithm
 bandit = Main_Bandit
+Reduced_Vector_Algorithm, Vector_Algorithm, bandit_new = Target_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
+
+# Running Bayesian algorithm
+bandit = Bandit(n_actions, n_features)
 bandit.theta = Main_theta
 Reduced_Vector_Bayesian, Vector_Bayesian, bandit_Bayes = Bayesian_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
 
-bandit = Main_Bandit
+# Running greedy search algorithm
+bandit = Bandit(n_actions, n_features)
 bandit.theta = Main_theta
 Reduced_Vector_RandomSearch, Vector_RandomSearch, bandit_Random = RandomSearch_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
 
-bandit = Main_Bandit
+# Running gradual decrease algorithm
+bandit = Bandit(n_actions, n_features)
 bandit.theta = Main_theta
 Reduced_Vector_GradualDecresement, Vector_GradualDecresement, bandit_Dec = GradualDecresement_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
 
-bandit = Main_Bandit
+# Running BOB SoftMax algorithm
+bandit = Bandit(n_actions, n_features)
 bandit.theta = Main_theta
 Reduced_Vector_BOBSoftmax, Vector_BOBSoftmax = BOBSoftmax_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
 
-bandit = Main_Bandit
+# Running BOB UCB algorithm
+bandit = Bandit(n_actions, n_features)
 bandit.theta = Main_theta
 Reduced_Vector_BOBBOBUCB, Vector_BOBBOBUCB = BOBUCB_Task_Optimization(n_actions, n_features, bandit, initial_alpha, Total_steps, Budget, final_df, Non_Stationary_Step, Non_Stationary, New_theta)
-
-######################################
-
-Reduced_Vector_Algorithm.to_excel("Reduced_Vector_Algorithm_Perturb20_10_10_2.xlsx")
-Reduced_Vector_Bayesian.to_excel("Reduced_Vector_Bayesian_Perturb20_10_10_2.xlsx")
-Reduced_Vector_BOBSoftmax.to_excel("Reduced_Vector_BOBSoftmax_Perturb20_10_10_2.xlsx")
-Reduced_Vector_GradualDecresement.to_excel("Reduced_Vector_GradualDecresement_Perturb20_10_10_2.xlsx")
-Reduced_Vector_RandomSearch.to_excel("Reduced_Vector_RandomSearch_Perturb20_10_10_2.xlsx")
-Reduced_Vector_BOBBOBUCB.to_excel("Reduced_Vector_BOBBOBUCB_Perturb20_10_10_2.xlsx")
-
-
-plt.plot(Reduced_Vector_Algorithm[10], Reduced_Vector_Algorithm[9], label='Proposed Algorithm')
-plt.plot(Reduced_Vector_RandomSearch[10], Reduced_Vector_RandomSearch[9], label='Gread Search')
-plt.plot(Reduced_Vector_Bayesian[10], Reduced_Vector_Bayesian[9], label='Bayesian')
-plt.plot(Reduced_Vector_GradualDecresement[10], Reduced_Vector_GradualDecresement[9], label='Gradual Decreasement')
-plt.plot(Reduced_Vector_BOBSoftmax[10], Reduced_Vector_BOBSoftmax[9], label='BoB')
-
-# Adding title and labels
-plt.title('f values across steps')
-plt.xlabel('Step')
-plt.ylabel('f')
-
-# Adding a legend to distinguish the lines
-plt.legend()
-
-# Show plot
-plt.show()
